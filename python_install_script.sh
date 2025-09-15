@@ -2,6 +2,7 @@
 
 # Script to install Python 3.11+ on Ubuntu without breaking the system Python
 # Makes python and pip commands available alongside python3 and pip3
+# Tested on WSL2 Ubuntu 22.04
 
 set -e  # Exit on any error
 
