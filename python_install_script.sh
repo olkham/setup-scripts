@@ -62,8 +62,54 @@ done
 
 # Add deadsnakes PPA for newer Python versions
 print_status "Adding deadsnakes PPA..."
-sudo add-apt-repository -y ppa:deadsnakes/ppa
-sudo apt update
+if ! sudo add-apt-repository -y ppa:deadsnakes/ppa; then
+    print_error "Failed to add deadsnakes PPA. Checking repository access..."
+    exit 1
+fi
+
+print_status "Updating package list after adding PPA..."
+if ! sudo apt update; then
+    print_error "Failed to update package list. Check your internet connection and repository access."
+    exit 1
+fi
+
+# Verify the PPA was added successfully by checking if any python3.1x packages are available
+print_status "Verifying deadsnakes PPA packages are available..."
+
+# First try to find packages with the regex pattern
+AVAILABLE_PYTHONS=$(apt-cache search '^python3\.(11|12|13)$' 2>/dev/null | wc -l)
+
+# If regex doesn't work, try simple search
+if [ "$AVAILABLE_PYTHONS" -eq 0 ]; then
+    AVAILABLE_PYTHONS=$(apt-cache search python3.11 python3.12 python3.13 2>/dev/null | grep -c "^python3\.1[123] ")
+fi
+
+# Check by looking for specific package names
+if [ "$AVAILABLE_PYTHONS" -eq 0 ]; then
+    for ver in 3.11 3.12 3.13; do
+        if apt-cache show "python${ver}" &> /dev/null; then
+            AVAILABLE_PYTHONS=$((AVAILABLE_PYTHONS + 1))
+        fi
+    done
+fi
+
+if [ "$AVAILABLE_PYTHONS" -eq 0 ]; then
+    print_error "No Python 3.11+ packages found after adding deadsnakes PPA."
+    print_error ""
+    print_error "The deadsnakes PPA may not support your Ubuntu version ($(lsb_release -cs))."
+    print_error "This is a known issue with older Ubuntu releases."
+    print_error ""
+    print_warning "Recommended solutions:"
+    print_warning "  1. Upgrade to Ubuntu 22.04 or later (recommended)"
+    print_warning "  2. Use pyenv to build Python from source:"
+    print_warning "     curl https://pyenv.run | bash"
+    print_warning "     pyenv install 3.11.9"
+    print_warning "  3. Use Docker/containers with newer Python"
+    print_warning "  4. Build from source: https://www.python.org/downloads/"
+    print_error ""
+    print_error "Exiting installation."
+    exit 1
+fi
 
 # Check for conflicting Python installations and clean them up
 print_status "Checking for conflicting Python installations..."
@@ -88,27 +134,58 @@ fi
 
 # Check available Python versions and install the latest 3.11+
 print_status "Checking available Python versions..."
-PYTHON_VERSION=$(apt-cache madison python3.11 python3.12 python3.13 2>/dev/null | head -1 | awk '{print $1}' | sed 's/python//' || echo "3.11")
+AVAILABLE_VERSIONS=""
+for ver in 3.13 3.12 3.11; do
+    if apt-cache show "python${ver}" &> /dev/null; then
+        AVAILABLE_VERSIONS="${ver} ${AVAILABLE_VERSIONS}"
+    fi
+done
 
-if [ -z "$PYTHON_VERSION" ]; then
-    PYTHON_VERSION="3.11"
+if [ -z "$AVAILABLE_VERSIONS" ]; then
+    print_error "No Python 3.11+ versions available in repositories."
+    print_error "Please check:"
+    print_error "  1. Internet connection"
+    print_error "  2. Run: apt-cache policy python3.11"
+    print_error "  3. Run: sudo apt update && sudo apt-cache search python3.11"
+    exit 1
 fi
+
+# Get the highest available version
+PYTHON_VERSION=$(echo "$AVAILABLE_VERSIONS" | awk '{print $1}')
+print_status "Found available Python versions: $AVAILABLE_VERSIONS"
+print_status "Will install Python ${PYTHON_VERSION}"
 
 print_status "Installing Python${PYTHON_VERSION}..."
 # Try to fix any broken dependencies first
 sudo apt --fix-broken install -y || true
+
+# Verify packages exist before attempting installation
+for pkg in python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv; do
+    if ! apt-cache show "$pkg" &> /dev/null; then
+        print_error "Package $pkg not found in repositories!"
+        print_error "Run 'apt-cache search python${PYTHON_VERSION}' to see available packages."
+        exit 1
+    fi
+done
 
 # Install Python with error handling
 if ! sudo apt install -y python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv; then
     print_warning "Standard installation failed. Trying alternative approach..."
     
     # Force overwrite conflicting files if necessary
-    sudo apt install -y --reinstall python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv || {
-        print_error "Failed to install Python${PYTHON_VERSION}. Trying to force installation..."
+    if ! sudo apt install -y --reinstall python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv; then
+        print_error "Failed to install Python${PYTHON_VERSION}. Attempting final recovery..."
         sudo dpkg --configure -a
         sudo apt --fix-broken install -y
-        sudo apt install -y python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv
-    }
+        if ! sudo apt install -y python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv; then
+            print_error "All installation attempts failed."
+            print_error "Please check the error messages above and try:"
+            print_error "  1. sudo apt update"
+            print_error "  2. apt-cache policy python${PYTHON_VERSION}"
+            print_error "  3. Check internet connection and repository access"
+            exit 1
+        fi
+    fi
 fi
 
 # Install pip for the new Python version
